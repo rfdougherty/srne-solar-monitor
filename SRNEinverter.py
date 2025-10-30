@@ -1,0 +1,286 @@
+from time import sleep
+from pymodbus.client import ModbusTcpClient
+from srnecommands import INVERTER_COMMANDS
+from enum import Enum
+from threading import Lock
+
+
+class Units(Enum):
+    POWER = 1
+    CURRRENT = 2
+    VOLTAGE = 3
+    PERCENTAGE = 4
+    TEMPERATURE = 5
+    FREQUENCY = 6
+
+
+class OutputPriority(Enum):
+    SOL = 0
+    UTI = 1
+    SBU = 2
+
+
+class ChargerPriority(Enum):
+    CSO = 0
+    CUB = 1
+    SNU = 2
+    OSO = 3
+
+
+# region SRNE Inverter Class
+
+
+class SRNEInverter():
+    """
+    SRNE All-in-one solar charger inverter
+    Target models HF2430S80-H | HF2430U80-H
+    """
+    # region Private
+
+    def __init__(self, host: str, port: int = 502, device_id: int = 1, debug: bool = False, timeout: int = 1, mock: bool = False) -> None:
+        if not mock:
+            self._client = ModbusTcpClient(host, port=port, timeout=timeout)
+            self._device_id = device_id
+            self._debug = debug
+            print(f"Connected to {host}:{port}")
+        else:
+            print("Mock mode enabled")
+        self.mock = mock
+        self._lock = Lock()
+
+    def _write_register(self, value: [int, float], register: int, decimals: int = 0, functioncode: int = 6, signed: bool = False) -> bool:
+        with self._lock:
+            if self.mock:
+                return self._mock_write_register()
+            sleep(0.1)
+            try:
+                # Connect if not already connected
+                if not self._client.is_socket_open():
+                    self._client.connect()
+                
+                # Write single register
+                result = self._client.write_register(register, int(value), device_id=self._device_id)
+                return not result.isError()
+            except Exception as e:
+                if self._debug:
+                    print(f"Write error: {e}")
+                return False
+
+    def _read_register(self, register: int, decimals: int, functioncode: int = 3, signed: bool = False) -> [int, float]:
+        with self._lock:
+            if self.mock:
+                return self._mock_read_register()
+            sleep(0.1)
+            try:
+                # Connect if not already connected
+                if not self._client.is_socket_open():
+                    self._client.connect()
+                
+                # Read holding registers
+                result = self._client.read_holding_registers(register, count=1, device_id=self._device_id)
+                if result.isError():
+                    if self._debug:
+                        print(f"Read error: {result}")
+                    return -10
+                
+                value = result.registers[0]
+                
+                # Apply decimal scaling
+                if decimals > 0:
+                    value = value / (10 ** decimals)
+                
+                # Apply signed conversion if needed
+                if signed and value > 32767:  # 16-bit signed max
+                    value = value - 65536
+                
+                return value
+            except Exception as e:
+                if self._debug:
+                    print(f"Read error: {e}")
+                return -10
+
+    def _mock_write_register(self) -> bool:
+        sleep(0.1)
+        return True
+
+    def _mock_read_register(self) -> [int, float]:
+        sleep(0.1)
+        return 1
+# endregion
+
+    # region Getters
+
+    # Battery Voltage
+    def get_battery_voltage(self) -> float:
+        value = self._read_register(*INVERTER_COMMANDS.get('battery_voltage'))
+        return float(value)
+
+    # Battery Current (Charge/Discharge)
+    def get_battery_charge_current(self) -> float:
+        """Returns charging/dischargin current value
+        Negative value if discharging
+        Positive value if charging
+        """
+        value = self._read_register(*INVERTER_COMMANDS.get('battery_current'))
+        return (-1) * float(value)
+
+    # Battery Charge Power
+    def get_battery_charge_power(self) -> int:
+        """Battery Charge Power(Grid + PV)"""
+        value = self._read_register(
+            *INVERTER_COMMANDS.get('battery_charge_power'))
+        return int(value)
+
+    # Battery State of Charge
+    def get_battery_soc(self) -> int:
+        value = self._read_register(*INVERTER_COMMANDS.get('battery_soc'))
+        return int(value)
+
+    # Battery Max Charge Current
+    def get_battery_charge_max_current(self) -> float:
+        value = self._read_register(
+            *INVERTER_COMMANDS.get('battery_max_charge_current'))
+        return float(value)
+
+    # PV Input Voltage
+    def get_pv_input_voltage(self) -> float:
+        value = self._read_register(*INVERTER_COMMANDS.get('pv_voltage'))
+        return float(value)
+
+    # PV Input Current
+    def get_pv_input_current(self) -> float:
+        value = self._read_register(*INVERTER_COMMANDS.get('pv_current'))
+        return float(value)
+
+    # PV Input Power
+    def get_pv_input_power(self) -> int:
+        value = self._read_register(*INVERTER_COMMANDS.get('pv_power'))
+        return int(value)
+
+    # PV Battery Charge Current
+    def get_pv_battery_charge_current(self) -> float:
+        value = self._read_register(
+            *INVERTER_COMMANDS.get('pv_battery_charge_current'))
+        return float(value)
+
+    # Grid Voltage
+    def get_grid_voltage(self) -> float:
+        value = self._read_register(*INVERTER_COMMANDS.get('grid_voltage'))
+        return float(value)
+
+    # Grid Input Current
+    def get_grid_input_current(self) -> float:
+        value = self._read_register(
+            *INVERTER_COMMANDS.get('grid_input_current'))
+        return float(value)
+
+    # Grid Battery Charge Current
+    def get_grid_battery_charge_current(self) -> float:
+        value = self._read_register(
+            *INVERTER_COMMANDS.get('grid_battery_charge_current'))
+        return float(value)
+
+    # Grid Frequency
+    def get_grid_frequency(self) -> float:
+        value = self._read_register(*INVERTER_COMMANDS.get('grid_frequency'))
+        return float(value)
+
+    # Grid Battery Charge Max Current
+    def get_grid_battery_charge_max_current(self) -> int:
+        value = self._read_register(
+            *INVERTER_COMMANDS.get('grid_battery_charge_max_current'))
+        return float(value)
+
+    # Inverter Output Voltage
+    def get_inverter_output_voltage(self) -> float:
+        value = self._read_register(*INVERTER_COMMANDS.get('inverter_voltage'))
+        return float(value)
+
+    # Inverter Output Current
+    def get_inverter_output_current(self) -> float:
+        value = self._read_register(*INVERTER_COMMANDS.get('inverter_current'))
+        return float(value)
+
+    # Inverter Output Frequency
+    def get_inverter_frequency(self) -> float:
+        value = self._read_register(
+            *INVERTER_COMMANDS.get('inverter_frequency'))
+        return float(value)
+
+    # Inverter Output Power
+    def get_inverter_output_power(self) -> int:
+        value = self._read_register(*INVERTER_COMMANDS.get('inverter_power'))
+        return int(value)
+
+    # Inverter output priority
+    def get_inverter_output_priority(self) -> OutputPriority:
+        value = self._read_register(
+            *INVERTER_COMMANDS.get('inverter_output_priority'))
+        return OutputPriority(int(value))
+
+    # Inverter charger priority
+    def get_inverter_charger_priority(self) -> ChargerPriority:
+        value = self._read_register(
+            *INVERTER_COMMANDS.get('inverter_charger_priority'))
+        return ChargerPriority(int(value))
+
+    # Get a complete record of all the parameters
+    def get_record(self):
+        record = {
+            'battery': {
+                'voltage': self.get_battery_voltage(),
+                'current': self.get_battery_charge_current(),
+                'chargePower': self.get_battery_charge_power(),
+                'soc':  self.get_battery_soc(),
+            },
+            'pv': {
+                'voltage': self.get_pv_input_voltage(),
+                'current': self.get_pv_input_current(),
+                'power': self.get_pv_input_power(),
+                'batteryChargeCurrent': self.get_pv_battery_charge_current()
+            },
+            #'grid': {
+            #    'voltage': self.get_grid_voltage(),
+            #    'inputCurrent': self.get_grid_input_current(),
+            #    'batteryChargeCurrent':  self.get_grid_battery_charge_current(),
+            #    'frequency': self.get_grid_frequency(),
+            #},
+            'inverter': {
+                'voltage': self.get_inverter_output_voltage(),
+                'current': self.get_inverter_output_current(),
+                'frequency': self.get_inverter_frequency(),
+                'power': self.get_inverter_output_power(),
+            },
+        }
+        return record
+
+    # endregion
+
+    # region Setters
+
+    # Set inverter output priority
+    def set_inverter_output_priority(self, priority: OutputPriority) -> bool:
+        params = (priority.value, *
+                  INVERTER_COMMANDS.get('inverter_output_priority_write'))
+        return self._write_register(*params)
+
+    # Set inverter charging priority
+    def set_inverter_charger_priority(self, priority: ChargerPriority) -> bool:
+        params = (priority.value, *
+                  INVERTER_COMMANDS.get('inverter_charger_priority_write'))
+        return self._write_register(*params)
+
+    # Set max charging current
+    def set_battery_charge_max_current(self, current: int) -> bool:
+        params = (
+            current, *INVERTER_COMMANDS.get('battery_max_charge_current_write'))
+        return self._write_register(*params)
+
+    # Set max utility charging current
+    def set_grid_battery_charger_maxmimum_current(self, current: int) -> bool:
+        params = (
+            current, *INVERTER_COMMANDS.get('grid_battery_charge_max_current_write'))
+        return self._write_register(*params)
+    # endregion
+
+# endregion
