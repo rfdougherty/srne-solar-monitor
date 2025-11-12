@@ -152,6 +152,12 @@ def main():
     # Main loop
     try:
         while True:
+            timestamp_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            print(f"\n{timestamp_str}")
+            
+            # Try to get inverter data
+            inverter_data_available = False
+            flattened_record = {}
             try:
                 # Get inverter data
                 record = inverter.get_record() 
@@ -159,24 +165,35 @@ def main():
                 # Flatten the record for InfluxDB storage
                 flattened_record = flatten_dict(record)
                 
-                # Get weather data
-                weather_data = get_weather_data(openmeteo, args.latitude, args.longitude, args.timezone)
+                # Try to get output priority (this can fail when inverter is offline)
+                try:
+                    val = inverter.get_inverter_output_priority()
+                    print(f"Output Priority: {val.value}")
+                except (ValueError, Exception) as e:
+                    if inverter._debug:
+                        print(f"Warning: Could not read output priority: {e}")
                 
-                # Print to console for monitoring
-                timestamp_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                print(f"\n{timestamp_str}")
                 print(record)
-                if weather_data:
-                    print(f"Weather: Temp={weather_data['weather_temperature_2m']:.1f}°C, "
-                          f"Humidity={weather_data['weather_relative_humidity_2m']:.1f}%, "
-                          f"Precip={weather_data['weather_precipitation']:.2f}mm, "
-                          f"Cloud={weather_data['weather_cloud_cover']:.1f}%")
-
-                val = inverter.get_inverter_output_priority()
-                print(f"Output Priority: {val.value}")
+                inverter_data_available = True
                 
-                # Prepare fields for InfluxDB (convert values to appropriate types)
-                fields = {}
+            except Exception as e:
+                print(f"Inverter offline or error reading inverter data: {e}")
+                if inverter._debug:
+                    traceback.print_exc()
+            
+            # Always try to get weather data (independent of inverter status)
+            weather_data = get_weather_data(openmeteo, args.latitude, args.longitude, args.timezone)
+            if weather_data:
+                print(f"Weather: Temp={weather_data['weather_temperature_2m']:.1f}°C, "
+                      f"Humidity={weather_data['weather_relative_humidity_2m']:.1f}%, "
+                      f"Precip={weather_data['weather_precipitation']:.2f}mm, "
+                      f"Cloud={weather_data['weather_cloud_cover']:.1f}%")
+            
+            # Prepare fields for InfluxDB (convert values to appropriate types)
+            fields = {}
+            
+            # Add inverter data if available
+            if inverter_data_available:
                 for key, value in flattened_record.items():
                     # Convert value to appropriate type
                     if isinstance(value, (int, float)):
@@ -194,15 +211,17 @@ def main():
                             fields[key] = value
                     else:
                         fields[key] = str(value)
-                
-                # Add weather data to fields if available
-                if weather_data:
-                    for key, value in weather_data.items():
-                        if isinstance(value, (int, float)):
-                            fields[key] = float(value)
-                        else:
-                            fields[key] = value
-                
+            
+            # Add weather data to fields if available
+            if weather_data:
+                for key, value in weather_data.items():
+                    if isinstance(value, (int, float)):
+                        fields[key] = float(value)
+                    else:
+                        fields[key] = value
+            
+            # Only save if we have at least some data
+            if fields:
                 # Create InfluxDB data point (JSON format for v1)
                 json_body = [{
                     "measurement": "inverter_data",
@@ -211,13 +230,19 @@ def main():
                 }]
                 
                 # Write point to InfluxDB
-                client.write_points(json_body)
-                
-                print(f"Data saved to InfluxDB database '{args.influx_database}'")
-                
-            except Exception as e:
-                print(f"Error reading/writing data: {e}")
-                traceback.print_exc()
+                try:
+                    client.write_points(json_body)
+                    if inverter_data_available and weather_data:
+                        print(f"Inverter and weather data saved to InfluxDB database '{args.influx_database}'")
+                    elif inverter_data_available:
+                        print(f"Inverter data saved to InfluxDB database '{args.influx_database}'")
+                    elif weather_data:
+                        print(f"Weather data saved to InfluxDB database '{args.influx_database}'")
+                except Exception as e:
+                    print(f"Error writing to InfluxDB: {e}")
+                    traceback.print_exc()
+            else:
+                print("No data available to save")
             
             # Wait for the specified interval
             time.sleep(args.interval)
