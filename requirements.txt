@@ -1,0 +1,6 @@
+influxdb==5.3.1
+openmeteo-requests>=1.0.0
+requests-cache>=1.0.0
+retry-requests>=1.0.0
+pymodbus>=3.0.0
+
